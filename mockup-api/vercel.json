@@ -1,0 +1,7 @@
+{
+  "functions": {
+    "api/mockup.py": {
+      "maxDuration": 30
+    }
+  }
+}
