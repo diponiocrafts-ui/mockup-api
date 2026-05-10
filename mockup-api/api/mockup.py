@@ -5,7 +5,6 @@ import requests
 import io
 import json
 import os
-import base64
 
 FRAMES = {
     1: [(618, 397, 1348, 1293)],
@@ -20,7 +19,6 @@ FRAMES = {
 }
 
 TEMPLATES_DIR = os.path.join(os.path.dirname(__file__), "templates")
-IMGBB_API_KEY = os.environ.get("IMGBB_API_KEY", "")
 
 
 def resize_cover(image, target_w, target_h):
@@ -34,14 +32,18 @@ def resize_cover(image, target_w, target_h):
     return resized.crop((left, top, left + target_w, top + target_h))
 
 
-def upload_to_imgbb(b64, index):
+def upload_to_catbox(img_bytes, index):
     resp = requests.post(
-        "https://api.imgbb.com/1/upload",
-        data={"key": IMGBB_API_KEY, "image": b64},
+        "https://catbox.moe/user/api.php",
+        data={"reqtype": "fileupload"},
+        files={"fileToUpload": (f"mockup_{index}.jpg", img_bytes, "image/jpeg")},
         timeout=20,
     )
     resp.raise_for_status()
-    return index, resp.json()["data"]["url"]
+    url = resp.text.strip()
+    if not url.startswith("http"):
+        raise ValueError(f"Unexpected catbox response: {url}")
+    return index, url
 
 
 class handler(BaseHTTPRequestHandler):
@@ -62,7 +64,7 @@ class handler(BaseHTTPRequestHandler):
             design_bytes = resp.content
 
             # Generate mockups sequentially
-            b64_images = []
+            img_bytes_list = []
             for t in templates:
                 t = int(t)
                 if t not in FRAMES:
@@ -82,15 +84,14 @@ class handler(BaseHTTPRequestHandler):
                     template = template.resize((1000, int(th * scale)), Image.LANCZOS)
                 output = io.BytesIO()
                 template.convert("RGB").save(output, format="JPEG", quality=75)
-                b64 = base64.b64encode(output.getvalue()).decode("utf-8")
-                b64_images.append(b64)
+                img_bytes_list.append(output.getvalue())
 
-            # Upload to ImgBB concurrently
-            urls = [None] * len(b64_images)
+            # Upload to Catbox concurrently (no API key required)
+            urls = [None] * len(img_bytes_list)
             with ThreadPoolExecutor(max_workers=9) as executor:
                 futures = {
-                    executor.submit(upload_to_imgbb, b64, i): i
-                    for i, b64 in enumerate(b64_images)
+                    executor.submit(upload_to_catbox, b, i): i
+                    for i, b in enumerate(img_bytes_list)
                 }
                 for future in as_completed(futures):
                     i, url = future.result()
