@@ -50,14 +50,33 @@ def upload_to_catbox(img_bytes, index):
 class handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
-        # Always return 200 so Make.com can see the response
-        # Error details go in the "error" field of the JSON body
+        # Always return 200 so Make.com can see response details
         try:
-            content_length = int(self.headers.get("Content-Length", 0))
-            post_data = self.rfile.read(content_length)
+            # FIX: Make.com uses chunked transfer encoding — no Content-Length header.
+            # Read body without relying on Content-Length.
+            content_length = int(self.headers.get("Content-Length") or 0)
+            if content_length > 0:
+                post_data = self.rfile.read(content_length)
+            else:
+                # Chunked or unknown — read up to 512KB
+                post_data = self.rfile.read(524288)
+
+            if not post_data:
+                headers_info = dict(self.headers)
+                self._json(200, {
+                    "urls": [],
+                    "error": "Empty request body",
+                    "step": "read_body",
+                    "headers": {k: v for k, v in headers_info.items() if k.lower() in [
+                        "content-length", "transfer-encoding", "content-type"
+                    ]}
+                })
+                return
+
             body = json.loads(post_data)
             design_url = body.get("design_url", "").strip()
             templates = body.get("templates", list(range(1, 10)))
+
             if not design_url:
                 self._json(200, {"urls": [], "error": "Missing design_url", "step": "validation"})
                 return
@@ -67,7 +86,7 @@ class handler(BaseHTTPRequestHandler):
                 resp.raise_for_status()
                 design_bytes = resp.content
             except Exception as e:
-                self._json(200, {"urls": [], "error": f"Dropbox download failed: {e}", "step": "download"})
+                self._json(200, {"urls": [], "error": f"Download failed: {e}", "step": "download"})
                 return
 
             # Generate mockups sequentially
@@ -98,7 +117,7 @@ class handler(BaseHTTPRequestHandler):
                 self._json(200, {"urls": [], "error": f"Generation failed: {e}", "step": "generation", "trace": tb[:500]})
                 return
 
-            # Upload to Catbox concurrently
+            # Upload to Catbox concurrently (no API key required)
             try:
                 urls = [None] * len(img_bytes_list)
                 with ThreadPoolExecutor(max_workers=9) as executor:
@@ -117,7 +136,7 @@ class handler(BaseHTTPRequestHandler):
             self._json(200, {"urls": urls, "count": len(urls)})
         except Exception as e:
             tb = traceback.format_exc()
-            self._json(200, {"urls": [], "error": f"Unexpected: {e}", "step": "outer", "trace": tb[:500]})
+            self._json(200, {"urls": [], "error": f"Outer error: {e}", "step": "outer", "trace": tb[:300]})
 
     def do_GET(self):
         self._json(200, {"status": "ok", "templates": list(FRAMES.keys())})
