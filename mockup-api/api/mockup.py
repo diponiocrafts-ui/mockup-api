@@ -21,7 +21,6 @@ FRAMES = {
 
 TEMPLATES_DIR = os.path.join(os.path.dirname(__file__), "templates")
 
-
 def resize_cover(image, target_w, target_h):
     img_w, img_h = image.size
     scale = max(target_w / img_w, target_h / img_h)
@@ -32,32 +31,19 @@ def resize_cover(image, target_w, target_h):
     top = (new_h - target_h) // 2
     return resized.crop((left, top, left + target_w, top + target_h))
 
-
-def process_and_upload(t, design_bytes, api_key):
+def generate_mockup_b64(t, design_bytes):
     design = Image.open(io.BytesIO(design_bytes)).convert("RGBA")
     template_path = os.path.join(TEMPLATES_DIR, f"{t}.png")
     template = Image.open(template_path).convert("RGBA")
-
     for (x1, y1, x2, y2) in FRAMES[t]:
         frame_w = x2 - x1
         frame_h = y2 - y1
         design_fitted = resize_cover(design, frame_w, frame_h)
         template.paste(design_fitted, (x1, y1), design_fitted)
-
     output = io.BytesIO()
-    template.convert("RGB").save(output, format="JPEG", quality=80)
-    img_bytes = output.getvalue()
-
-    img_b64 = base64.b64encode(img_bytes).decode("utf-8")
-    resp = requests.post(
-        "https://api.imgbb.com/1/upload",
-        data={"key": api_key, "name": f"mockup_{t}.jpg", "image": img_b64},
-        timeout=25,
-    )
-    resp.raise_for_status()
-    result = resp.json()
-    return t, result["data"]["url"]
-
+    template.convert("RGB").save(output, format="JPEG", quality=70)
+    b64 = base64.b64encode(output.getvalue()).decode("utf-8")
+    return t, b64
 
 class handler(BaseHTTPRequestHandler):
 
@@ -66,41 +52,29 @@ class handler(BaseHTTPRequestHandler):
             content_length = int(self.headers.get("Content-Length", 0))
             post_data = self.rfile.read(content_length)
             body = json.loads(post_data)
-
             design_url = body.get("design_url", "").strip()
             templates = body.get("templates", list(range(1, 10)))
-
             if not design_url:
                 self._error(400, "Missing design_url")
                 return
-
             for t in templates:
                 if int(t) not in FRAMES:
                     self._error(400, f"Invalid template: {t}. Must be 1-9.")
                     return
-
-            api_key = os.environ.get("IMGBB_API_KEY", "")
-            if not api_key:
-                self._error(500, "IMGBB_API_KEY not set in Vercel environment variables")
-                return
-
             resp = requests.get(design_url, timeout=15)
             resp.raise_for_status()
             design_bytes = resp.content
-
             results = {}
             with ThreadPoolExecutor(max_workers=9) as executor:
                 futures = {
-                    executor.submit(process_and_upload, int(t), design_bytes, api_key): t
+                    executor.submit(generate_mockup_b64, int(t), design_bytes): t
                     for t in templates
                 }
                 for future in as_completed(futures):
-                    t, url = future.result()
-                    results[t] = url
-
-            urls = [results[int(t)] for t in templates]
-            self._json(200, {"urls": urls, "count": len(urls)})
-
+                    t, b64 = future.result()
+                    results[t] = b64
+            images = [results[int(t)] for t in templates]
+            self._json(200, {"images": images, "count": len(images)})
         except Exception as e:
             self._error(500, str(e))
 
