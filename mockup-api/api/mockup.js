@@ -26,10 +26,17 @@ async function getTemplateBuffer(t) {
   return templateCache[t];
 }
 
-async function downloadImage(url) {
+async function downloadImage(url, redirects) {
+  if (redirects === undefined) redirects = 0;
+  if (redirects > 5) throw new Error('Too many redirects');
   return new Promise((resolve, reject) => {
     const client = url.startsWith('https') ? https : http;
     const req = client.get(url, { timeout: 10000 }, (res) => {
+      if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+        res.resume();
+        resolve(downloadImage(res.headers.location, redirects + 1));
+        return;
+      }
       if (res.statusCode !== 200) { reject(new Error(`HTTP ${res.statusCode}`)); return; }
       const chunks = [];
       res.on('data', chunk => chunks.push(chunk));
