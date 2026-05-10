@@ -5,6 +5,8 @@ import requests
 import io
 import json
 import os
+import sys
+import traceback
 
 FRAMES = {
     1: [(618, 397, 1348, 1293)],
@@ -33,6 +35,7 @@ def resize_cover(image, target_w, target_h):
 
 
 def upload_to_catbox(img_bytes, index):
+    print(f"[UPLOAD] Starting upload for index {index}, size={len(img_bytes)}", flush=True)
     resp = requests.post(
         "https://catbox.moe/user/api.php",
         data={"reqtype": "fileupload"},
@@ -41,6 +44,7 @@ def upload_to_catbox(img_bytes, index):
     )
     resp.raise_for_status()
     url = resp.text.strip()
+    print(f"[UPLOAD] Done index {index}: {url}", flush=True)
     if not url.startswith("http"):
         raise ValueError(f"Unexpected catbox response: {url}")
     return index, url
@@ -50,18 +54,22 @@ class handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         try:
+            print("[POST] Request received", flush=True)
             content_length = int(self.headers.get("Content-Length", 0))
             post_data = self.rfile.read(content_length)
             body = json.loads(post_data)
             design_url = body.get("design_url", "").strip()
             templates = body.get("templates", list(range(1, 10)))
+            print(f"[POST] design_url={design_url[:80]}, templates={templates}", flush=True)
             if not design_url:
                 self._error(400, "Missing design_url")
                 return
 
+            print("[POST] Downloading design...", flush=True)
             resp = requests.get(design_url, timeout=15)
             resp.raise_for_status()
             design_bytes = resp.content
+            print(f"[POST] Design downloaded: {len(design_bytes)} bytes", flush=True)
 
             # Generate mockups sequentially
             img_bytes_list = []
@@ -72,6 +80,7 @@ class handler(BaseHTTPRequestHandler):
                     return
                 design = Image.open(io.BytesIO(design_bytes)).convert("RGBA")
                 template_path = os.path.join(TEMPLATES_DIR, f"{t}.png")
+                print(f"[POST] Processing template {t}: {template_path}", flush=True)
                 template = Image.open(template_path).convert("RGBA")
                 for (x1, y1, x2, y2) in FRAMES[t]:
                     frame_w = x2 - x1
@@ -85,6 +94,7 @@ class handler(BaseHTTPRequestHandler):
                 output = io.BytesIO()
                 template.convert("RGB").save(output, format="JPEG", quality=75)
                 img_bytes_list.append(output.getvalue())
+            print(f"[POST] Generated {len(img_bytes_list)} mockups", flush=True)
 
             # Upload to Catbox concurrently (no API key required)
             urls = [None] * len(img_bytes_list)
@@ -97,8 +107,11 @@ class handler(BaseHTTPRequestHandler):
                     i, url = future.result()
                     urls[i] = url
 
+            print(f"[POST] All uploads done. URLs: {urls}", flush=True)
             self._json(200, {"urls": urls, "count": len(urls)})
         except Exception as e:
+            tb = traceback.format_exc()
+            print(f"[ERROR] {e}\n{tb}", flush=True)
             self._error(500, str(e))
 
     def do_GET(self):
