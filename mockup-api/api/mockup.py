@@ -5,6 +5,7 @@ import requests
 import io
 import json
 import os
+import base64
 import traceback
 
 FRAMES = {
@@ -43,8 +44,8 @@ def resize_cover(image, target_w, target_h):
     return resized.crop((left, top, left + target_w, top + target_h))
 
 
-def generate_and_upload(args):
-    """Generate one mockup and upload it immediately — pipelined per thread."""
+def generate_mockup(args):
+    """Generate one mockup and return (index, base64_jpeg)."""
     t, design_bytes, index = args
     design = Image.open(io.BytesIO(design_bytes)).convert("RGBA")
     template = get_template(t)
@@ -61,20 +62,9 @@ def generate_and_upload(args):
         template = template.resize((800, int(th * scale)), Image.BILINEAR)
 
     output = io.BytesIO()
-    template.convert("RGB").save(output, format="JPEG", quality=55)
-    img_bytes = output.getvalue()
-
-    # Upload to 0x0.st (no API key required)
-    resp = requests.post(
-        "https://0x0.st",
-        files={"file": (f"mockup_{index}.jpg", img_bytes, "image/jpeg")},
-        timeout=8,
-    )
-    resp.raise_for_status()
-    url = resp.text.strip()
-    if not url.startswith("http"):
-        raise ValueError(f"Bad 0x0.st response: {url!r}")
-    return index, url
+    template.convert("RGB").save(output, format="JPEG", quality=60)
+    b64 = base64.b64encode(output.getvalue()).decode("utf-8")
+    return index, b64
 
 
 class handler(BaseHTTPRequestHandler):
@@ -89,11 +79,7 @@ class handler(BaseHTTPRequestHandler):
                 post_data = self.rfile.read(524288)
 
             if not post_data:
-                self._json(200, {
-                    "urls": [],
-                    "error": "Empty request body",
-                    "step": "read_body",
-                })
+                self._json(200, {"images": [], "error": "Empty body", "step": "read_body"})
                 return
 
             body = json.loads(post_data)
@@ -101,18 +87,18 @@ class handler(BaseHTTPRequestHandler):
             templates = body.get("templates", list(range(1, 10)))
 
             if not design_url:
-                self._json(200, {"urls": [], "error": "Missing design_url", "step": "validation"})
+                self._json(200, {"images": [], "error": "Missing design_url", "step": "validation"})
                 return
 
             try:
                 templates = [int(t) for t in templates]
             except Exception as e:
-                self._json(200, {"urls": [], "error": f"Template parse error: {e}", "step": "validation"})
+                self._json(200, {"images": [], "error": f"Template parse: {e}", "step": "validation"})
                 return
 
             for t in templates:
                 if t not in FRAMES:
-                    self._json(200, {"urls": [], "error": f"Invalid template: {t}", "step": "validation"})
+                    self._json(200, {"images": [], "error": f"Invalid template: {t}", "step": "validation"})
                     return
 
             # Download design once
@@ -121,38 +107,28 @@ class handler(BaseHTTPRequestHandler):
                 resp.raise_for_status()
                 design_bytes = resp.content
             except Exception as e:
-                self._json(200, {"urls": [], "error": f"Download failed: {e}", "step": "download"})
+                self._json(200, {"images": [], "error": f"Download failed: {e}", "step": "download"})
                 return
 
-            # Parallel: each thread generates + uploads one mockup
+            # Generate all mockups concurrently — return base64, no upload needed
             try:
-                urls = [None] * len(templates)
+                images = [None] * len(templates)
                 args_list = [(t, design_bytes, i) for i, t in enumerate(templates)]
                 with ThreadPoolExecutor(max_workers=len(templates)) as executor:
-                    futures = {executor.submit(generate_and_upload, a): a[2] for a in args_list}
+                    futures = {executor.submit(generate_mockup, a): a[2] for a in args_list}
                     for future in as_completed(futures):
-                        i, url = future.result()
-                        urls[i] = url
+                        i, b64 = future.result()
+                        images[i] = b64
             except Exception as e:
                 tb = traceback.format_exc()
-                self._json(200, {
-                    "urls": [],
-                    "error": f"Process failed: {e}",
-                    "step": "process",
-                    "trace": tb[:500],
-                })
+                self._json(200, {"images": [], "error": f"Generation failed: {e}", "step": "generation", "trace": tb[:500]})
                 return
 
-            self._json(200, {"urls": urls, "count": len(urls)})
+            self._json(200, {"images": images, "count": len(images)})
 
         except Exception as e:
             tb = traceback.format_exc()
-            self._json(200, {
-                "urls": [],
-                "error": f"Outer error: {e}",
-                "step": "outer",
-                "trace": tb[:300],
-            })
+            self._json(200, {"images": [], "error": f"Outer error: {e}", "step": "outer", "trace": tb[:300]})
 
     def do_GET(self):
         self._json(200, {"status": "ok", "templates": list(FRAMES.keys())})
