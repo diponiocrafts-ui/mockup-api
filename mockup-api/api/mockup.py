@@ -1,6 +1,5 @@
 from http.server import BaseHTTPRequestHandler
 from PIL import Image
-from concurrent.futures import ThreadPoolExecutor, as_completed
 import requests
 import io
 import json
@@ -21,6 +20,7 @@ FRAMES = {
 
 TEMPLATES_DIR = os.path.join(os.path.dirname(__file__), "templates")
 
+
 def resize_cover(image, target_w, target_h):
     img_w, img_h = image.size
     scale = max(target_w / img_w, target_h / img_h)
@@ -31,19 +31,6 @@ def resize_cover(image, target_w, target_h):
     top = (new_h - target_h) // 2
     return resized.crop((left, top, left + target_w, top + target_h))
 
-def generate_mockup_b64(t, design_bytes):
-    design = Image.open(io.BytesIO(design_bytes)).convert("RGBA")
-    template_path = os.path.join(TEMPLATES_DIR, f"{t}.png")
-    template = Image.open(template_path).convert("RGBA")
-    for (x1, y1, x2, y2) in FRAMES[t]:
-        frame_w = x2 - x1
-        frame_h = y2 - y1
-        design_fitted = resize_cover(design, frame_w, frame_h)
-        template.paste(design_fitted, (x1, y1), design_fitted)
-    output = io.BytesIO()
-    template.convert("RGB").save(output, format="JPEG", quality=70)
-    b64 = base64.b64encode(output.getvalue()).decode("utf-8")
-    return t, b64
 
 class handler(BaseHTTPRequestHandler):
 
@@ -57,23 +44,31 @@ class handler(BaseHTTPRequestHandler):
             if not design_url:
                 self._error(400, "Missing design_url")
                 return
-            for t in templates:
-                if int(t) not in FRAMES:
-                    self._error(400, f"Invalid template: {t}. Must be 1-9.")
-                    return
             resp = requests.get(design_url, timeout=15)
             resp.raise_for_status()
             design_bytes = resp.content
-            results = {}
-            with ThreadPoolExecutor(max_workers=9) as executor:
-                futures = {
-                    executor.submit(generate_mockup_b64, int(t), design_bytes): t
-                    for t in templates
-                }
-                for future in as_completed(futures):
-                    t, b64 = future.result()
-                    results[t] = b64
-            images = [results[int(t)] for t in templates]
+            images = []
+            for t in templates:
+                t = int(t)
+                if t not in FRAMES:
+                    self._error(400, f"Invalid template: {t}")
+                    return
+                design = Image.open(io.BytesIO(design_bytes)).convert("RGBA")
+                template_path = os.path.join(TEMPLATES_DIR, f"{t}.png")
+                template = Image.open(template_path).convert("RGBA")
+                for (x1, y1, x2, y2) in FRAMES[t]:
+                    frame_w = x2 - x1
+                    frame_h = y2 - y1
+                    design_fitted = resize_cover(design, frame_w, frame_h)
+                    template.paste(design_fitted, (x1, y1), design_fitted)
+                tw, th = template.size
+                if tw > 1000:
+                    scale = 1000 / tw
+                    template = template.resize((1000, int(th * scale)), Image.LANCZOS)
+                output = io.BytesIO()
+                template.convert("RGB").save(output, format="JPEG", quality=75)
+                b64 = base64.b64encode(output.getvalue()).decode("utf-8")
+                images.append(b64)
             self._json(200, {"images": images, "count": len(images)})
         except Exception as e:
             self._error(500, str(e))
