@@ -1,5 +1,6 @@
 from http.server import BaseHTTPRequestHandler
 from PIL import Image
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import requests
 import io
 import json
@@ -19,6 +20,7 @@ FRAMES = {
 }
 
 TEMPLATES_DIR = os.path.join(os.path.dirname(__file__), "templates")
+IMGBB_API_KEY = os.environ.get("IMGBB_API_KEY", "")
 
 
 def resize_cover(image, target_w, target_h):
@@ -30,6 +32,16 @@ def resize_cover(image, target_w, target_h):
     left = (new_w - target_w) // 2
     top = (new_h - target_h) // 2
     return resized.crop((left, top, left + target_w, top + target_h))
+
+
+def upload_to_imgbb(b64, index):
+    resp = requests.post(
+        "https://api.imgbb.com/1/upload",
+        data={"key": IMGBB_API_KEY, "image": b64},
+        timeout=20,
+    )
+    resp.raise_for_status()
+    return index, resp.json()["data"]["url"]
 
 
 class handler(BaseHTTPRequestHandler):
@@ -44,10 +56,13 @@ class handler(BaseHTTPRequestHandler):
             if not design_url:
                 self._error(400, "Missing design_url")
                 return
+
             resp = requests.get(design_url, timeout=15)
             resp.raise_for_status()
             design_bytes = resp.content
-            images = []
+
+            # Generate mockups sequentially
+            b64_images = []
             for t in templates:
                 t = int(t)
                 if t not in FRAMES:
@@ -68,8 +83,20 @@ class handler(BaseHTTPRequestHandler):
                 output = io.BytesIO()
                 template.convert("RGB").save(output, format="JPEG", quality=75)
                 b64 = base64.b64encode(output.getvalue()).decode("utf-8")
-                images.append(b64)
-            self._json(200, {"images": images, "count": len(images)})
+                b64_images.append(b64)
+
+            # Upload to ImgBB concurrently
+            urls = [None] * len(b64_images)
+            with ThreadPoolExecutor(max_workers=9) as executor:
+                futures = {
+                    executor.submit(upload_to_imgbb, b64, i): i
+                    for i, b64 in enumerate(b64_images)
+                }
+                for future in as_completed(futures):
+                    i, url = future.result()
+                    urls[i] = url
+
+            self._json(200, {"urls": urls, "count": len(urls)})
         except Exception as e:
             self._error(500, str(e))
 
