@@ -5,7 +5,6 @@ import requests
 import io
 import json
 import os
-import sys
 import traceback
 
 FRAMES = {
@@ -35,7 +34,6 @@ def resize_cover(image, target_w, target_h):
 
 
 def upload_to_catbox(img_bytes, index):
-    print(f"[UPLOAD] Starting upload for index {index}, size={len(img_bytes)}", flush=True)
     resp = requests.post(
         "https://catbox.moe/user/api.php",
         data={"reqtype": "fileupload"},
@@ -44,7 +42,6 @@ def upload_to_catbox(img_bytes, index):
     )
     resp.raise_for_status()
     url = resp.text.strip()
-    print(f"[UPLOAD] Done index {index}: {url}", flush=True)
     if not url.startswith("http"):
         raise ValueError(f"Unexpected catbox response: {url}")
     return index, url
@@ -53,66 +50,74 @@ def upload_to_catbox(img_bytes, index):
 class handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
+        # Always return 200 so Make.com can see the response
+        # Error details go in the "error" field of the JSON body
         try:
-            print("[POST] Request received", flush=True)
             content_length = int(self.headers.get("Content-Length", 0))
             post_data = self.rfile.read(content_length)
             body = json.loads(post_data)
             design_url = body.get("design_url", "").strip()
             templates = body.get("templates", list(range(1, 10)))
-            print(f"[POST] design_url={design_url[:80]}, templates={templates}", flush=True)
             if not design_url:
-                self._error(400, "Missing design_url")
+                self._json(200, {"urls": [], "error": "Missing design_url", "step": "validation"})
                 return
 
-            print("[POST] Downloading design...", flush=True)
-            resp = requests.get(design_url, timeout=15)
-            resp.raise_for_status()
-            design_bytes = resp.content
-            print(f"[POST] Design downloaded: {len(design_bytes)} bytes", flush=True)
+            try:
+                resp = requests.get(design_url, timeout=15)
+                resp.raise_for_status()
+                design_bytes = resp.content
+            except Exception as e:
+                self._json(200, {"urls": [], "error": f"Dropbox download failed: {e}", "step": "download"})
+                return
 
             # Generate mockups sequentially
             img_bytes_list = []
-            for t in templates:
-                t = int(t)
-                if t not in FRAMES:
-                    self._error(400, f"Invalid template: {t}")
-                    return
-                design = Image.open(io.BytesIO(design_bytes)).convert("RGBA")
-                template_path = os.path.join(TEMPLATES_DIR, f"{t}.png")
-                print(f"[POST] Processing template {t}: {template_path}", flush=True)
-                template = Image.open(template_path).convert("RGBA")
-                for (x1, y1, x2, y2) in FRAMES[t]:
-                    frame_w = x2 - x1
-                    frame_h = y2 - y1
-                    design_fitted = resize_cover(design, frame_w, frame_h)
-                    template.paste(design_fitted, (x1, y1), design_fitted)
-                tw, th = template.size
-                if tw > 1000:
-                    scale = 1000 / tw
-                    template = template.resize((1000, int(th * scale)), Image.LANCZOS)
-                output = io.BytesIO()
-                template.convert("RGB").save(output, format="JPEG", quality=75)
-                img_bytes_list.append(output.getvalue())
-            print(f"[POST] Generated {len(img_bytes_list)} mockups", flush=True)
+            try:
+                for t in templates:
+                    t = int(t)
+                    if t not in FRAMES:
+                        self._json(200, {"urls": [], "error": f"Invalid template: {t}", "step": "template_check"})
+                        return
+                    design = Image.open(io.BytesIO(design_bytes)).convert("RGBA")
+                    template_path = os.path.join(TEMPLATES_DIR, f"{t}.png")
+                    template = Image.open(template_path).convert("RGBA")
+                    for (x1, y1, x2, y2) in FRAMES[t]:
+                        frame_w = x2 - x1
+                        frame_h = y2 - y1
+                        design_fitted = resize_cover(design, frame_w, frame_h)
+                        template.paste(design_fitted, (x1, y1), design_fitted)
+                    tw, th = template.size
+                    if tw > 1000:
+                        scale = 1000 / tw
+                        template = template.resize((1000, int(th * scale)), Image.LANCZOS)
+                    output = io.BytesIO()
+                    template.convert("RGB").save(output, format="JPEG", quality=75)
+                    img_bytes_list.append(output.getvalue())
+            except Exception as e:
+                tb = traceback.format_exc()
+                self._json(200, {"urls": [], "error": f"Generation failed: {e}", "step": "generation", "trace": tb[:500]})
+                return
 
-            # Upload to Catbox concurrently (no API key required)
-            urls = [None] * len(img_bytes_list)
-            with ThreadPoolExecutor(max_workers=9) as executor:
-                futures = {
-                    executor.submit(upload_to_catbox, b, i): i
-                    for i, b in enumerate(img_bytes_list)
-                }
-                for future in as_completed(futures):
-                    i, url = future.result()
-                    urls[i] = url
+            # Upload to Catbox concurrently
+            try:
+                urls = [None] * len(img_bytes_list)
+                with ThreadPoolExecutor(max_workers=9) as executor:
+                    futures = {
+                        executor.submit(upload_to_catbox, b, i): i
+                        for i, b in enumerate(img_bytes_list)
+                    }
+                    for future in as_completed(futures):
+                        i, url = future.result()
+                        urls[i] = url
+            except Exception as e:
+                tb = traceback.format_exc()
+                self._json(200, {"urls": [], "error": f"Upload failed: {e}", "step": "upload", "trace": tb[:500]})
+                return
 
-            print(f"[POST] All uploads done. URLs: {urls}", flush=True)
             self._json(200, {"urls": urls, "count": len(urls)})
         except Exception as e:
             tb = traceback.format_exc()
-            print(f"[ERROR] {e}\n{tb}", flush=True)
-            self._error(500, str(e))
+            self._json(200, {"urls": [], "error": f"Unexpected: {e}", "step": "outer", "trace": tb[:500]})
 
     def do_GET(self):
         self._json(200, {"status": "ok", "templates": list(FRAMES.keys())})
@@ -125,9 +130,6 @@ class handler(BaseHTTPRequestHandler):
         self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
         self.wfile.write(body)
-
-    def _error(self, code, message):
-        self._json(code, {"error": message})
 
     def log_message(self, format, *args):
         pass
