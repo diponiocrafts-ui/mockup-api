@@ -1,0 +1,8 @@
+{
+  "functions": {
+    "api/mockup.py": { "maxDuration": 30 },
+    "api/add-white-variants.py": { "maxDuration": 30 },
+    "api/transform-inventory.py": { "maxDuration": 30 },
+    "api/get-listing-id.py": { "maxDuration": 30 }
+  }
+}
