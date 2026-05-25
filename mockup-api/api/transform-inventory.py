@@ -89,11 +89,12 @@ def money_to_float(price_obj):
 
 
 def transform_offering(o):
-    """Convert GET offering to PUT format. Only send price/quantity/is_enabled."""
+    """Convert GET offering to PUT format."""
     return {
         "price": money_to_float(o.get("price", 0)),
         "quantity": o.get("quantity", 999),
         "is_enabled": o.get("is_enabled", True),
+        "readiness_state": 2,
     }
 
 
@@ -131,7 +132,7 @@ def build_white_variant(sku, capacity_value, price, color_prop, capacity_prop):
                 "scale_id": capacity_prop.get("scale_id"),
             },
         ],
-        "offerings": [{"price": price, "quantity": 999, "is_enabled": True}],
+        "offerings": [{"price": price, "quantity": 999, "is_enabled": True, "readiness_state": 2}],
     }
 
 
@@ -203,7 +204,7 @@ class handler(BaseHTTPRequestHandler):
         self.wfile.write(json.dumps({
             "status": "ok",
             "endpoint": "transform-inventory",
-            "version": "rs-on-property-v4",
+            "version": "both-rs-v5",
         }).encode())
 
     def do_POST(self):
