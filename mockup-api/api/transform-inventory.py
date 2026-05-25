@@ -108,13 +108,16 @@ def transform_product_for_put(product):
         "sku": product.get("sku", ""),
         "property_values": property_values,
         "offerings": offerings,
+        "readiness_state": 1,
     }
 
 
 def build_white_variant(sku, capacity_value, price, color_prop, capacity_prop):
     return {
         "sku": sku,
-        "property_values": [
+        "property_values": [...],
+        "offerings": [...],
+        "readiness_state": 1,
             {
                 "property_id": color_prop["property_id"],
                 "property_name": color_prop.get("property_name", "Color"),
