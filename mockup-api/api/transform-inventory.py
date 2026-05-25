@@ -88,14 +88,26 @@ def money_to_float(price_obj):
     return round(float(amount) / float(divisor), 2)
 
 
+def transform_offering(o):
+    offering = {}
+    for key, val in o.items():
+        if key == "offering_id":
+            continue
+        elif key == "price":
+            offering["price"] = money_to_float(val)
+        else:
+            offering[key] = val
+    if "price" not in offering:
+        offering["price"] = 0.0
+    if "quantity" not in offering:
+        offering["quantity"] = 999
+    if "is_enabled" not in offering:
+        offering["is_enabled"] = True
+    return offering
+
+
 def transform_product_for_put(product):
-    offerings = []
-    for o in product.get("offerings", []):
-        offerings.append({
-            "price": money_to_float(o.get("price", 0)),
-            "quantity": o.get("quantity", 999),
-            "is_enabled": o.get("is_enabled", True),
-        })
+    offerings = [transform_offering(o) for o in product.get("offerings", [])]
     property_values = []
     for pv in product.get("property_values", []):
         property_values.append({
@@ -108,11 +120,14 @@ def transform_product_for_put(product):
         "sku": product.get("sku", ""),
         "property_values": property_values,
         "offerings": offerings,
-        "readiness_state": 1,
     }
 
 
-def build_white_variant(sku, capacity_value, price, color_prop, capacity_prop):
+def build_white_variant(sku, capacity_value, price, color_prop, capacity_prop, sample_offering):
+    offering = {"price": price, "quantity": 999, "is_enabled": True}
+    for key, val in sample_offering.items():
+        if key not in ("offering_id", "price", "quantity", "is_enabled"):
+            offering[key] = val
     return {
         "sku": sku,
         "property_values": [
@@ -129,8 +144,7 @@ def build_white_variant(sku, capacity_value, price, color_prop, capacity_prop):
                 "scale_id": capacity_prop.get("scale_id"),
             },
         ],
-        "offerings": [{"price": price, "quantity": 999, "is_enabled": True}],
-        "readiness_state": 1,
+        "offerings": [offering],
     }
 
 
@@ -158,6 +172,8 @@ def transform_inventory(inventory):
         found = [pv.get("property_name") for pv in first.get("property_values", [])]
         return None, f"Expected Color/Mug color + Capacity/Size/Mug sizes, found: {found}"
 
+    sample_offering = first.get("offerings", [{}])[0] if first.get("offerings") else {}
+
     price_11oz = None
     price_15oz = None
     for product in existing_products:
@@ -172,18 +188,18 @@ def transform_inventory(inventory):
         if price_11oz and price_15oz:
             break
 
-    fallback = money_to_float(first.get("offerings", [{}])[0].get("price", 0))
+    fallback = money_to_float(sample_offering.get("price", 0))
     price_11oz = price_11oz or fallback
     price_15oz = price_15oz or fallback
 
     updated = [transform_product_for_put(p) for p in existing_products]
     if WHITE_11OZ_SKU not in existing_skus:
         updated.append(build_white_variant(
-            WHITE_11OZ_SKU, "11 Fluid ounces", price_11oz, color_prop, capacity_prop
+            WHITE_11OZ_SKU, "11 Fluid ounces", price_11oz, color_prop, capacity_prop, sample_offering
         ))
     if WHITE_15OZ_SKU not in existing_skus:
         updated.append(build_white_variant(
-            WHITE_15OZ_SKU, "15 Fluid ounces", price_15oz, color_prop, capacity_prop
+            WHITE_15OZ_SKU, "15 Fluid ounces", price_15oz, color_prop, capacity_prop, sample_offering
         ))
 
     return updated, None
@@ -202,7 +218,8 @@ class handler(BaseHTTPRequestHandler):
         self.wfile.write(json.dumps({
             "status": "ok",
             "endpoint": "transform-inventory",
-            "mode": "fetch + transform + PUT (listing_id only required)",
+            "mode": "fetch + transform + PUT",
+            "version": "passthrough-v2",
         }).encode())
 
     def do_POST(self):
@@ -233,15 +250,19 @@ class handler(BaseHTTPRequestHandler):
             if err:
                 return self._json({"status": "error", "error": err})
 
-            # Build PUT body preserving original inventory metadata
             put_body = {"products": products}
-            for key in ["price_on_property", "quantity_on_property", "sku_on_property", "readiness_state_on_property"]:
+            for key in ["price_on_property", "quantity_on_property", "sku_on_property"]:
                 if key in inventory:
                     put_body[key] = inventory[key]
 
             result, err = put_etsy_inventory(listing_id, put_body, access_token, client_id, shared_secret)
             if err:
-                return self._json({"status": "error", "error": err, "products_count": len(products)})
+                return self._json({
+                    "status": "error",
+                    "error": err,
+                    "products_count": len(products),
+                    "sample_offering": products[0]["offerings"][0] if products and products[0].get("offerings") else None,
+                })
 
             return self._json({
                 "status": "ok",
