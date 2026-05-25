@@ -92,9 +92,9 @@ def transform_product_for_put(product):
     offerings = []
     for o in product.get("offerings", []):
         offerings.append({
-    "price": money_to_float(o.get("price", 0)),
-    "quantity": o.get("quantity", 999),
-    "is_enabled": o.get("is_enabled", True),
+            "price": money_to_float(o.get("price", 0)),
+            "quantity": o.get("quantity", 999),
+            "is_enabled": o.get("is_enabled", True),
         })
     property_values = []
     for pv in product.get("property_values", []):
@@ -115,9 +115,7 @@ def transform_product_for_put(product):
 def build_white_variant(sku, capacity_value, price, color_prop, capacity_prop):
     return {
         "sku": sku,
-        "property_values": [...],
-        "offerings": [...],
-        "readiness_state": 1,
+        "property_values": [
             {
                 "property_id": color_prop["property_id"],
                 "property_name": color_prop.get("property_name", "Color"),
@@ -132,6 +130,7 @@ def build_white_variant(sku, capacity_value, price, color_prop, capacity_prop):
             },
         ],
         "offerings": [{"price": price, "quantity": 999, "is_enabled": True}],
+        "readiness_state": 1,
     }
 
 
@@ -179,9 +178,13 @@ def transform_inventory(inventory):
 
     updated = [transform_product_for_put(p) for p in existing_products]
     if WHITE_11OZ_SKU not in existing_skus:
-        updated.append(build_white_variant(WHITE_11OZ_SKU, "11 Fluid ounces", price_11oz, color_prop, capacity_prop))
+        updated.append(build_white_variant(
+            WHITE_11OZ_SKU, "11 Fluid ounces", price_11oz, color_prop, capacity_prop
+        ))
     if WHITE_15OZ_SKU not in existing_skus:
-        updated.append(build_white_variant(WHITE_15OZ_SKU, "15 Fluid ounces", price_15oz, color_prop, capacity_prop))
+        updated.append(build_white_variant(
+            WHITE_15OZ_SKU, "15 Fluid ounces", price_15oz, color_prop, capacity_prop
+        ))
 
     return updated, None
 
