@@ -128,7 +128,7 @@ def build_white_variant(sku, capacity_value, price, color_prop, capacity_prop):
                 "scale_id": capacity_prop.get("scale_id"),
             },
         ],
-        "offerings": [{"price": price, "quantity": 999, "is_enabled": True, "readiness_state": "ready"}],
+        "offerings": [{"price": price, "quantity": 999, "is_enabled": True}],
     }
 
 
