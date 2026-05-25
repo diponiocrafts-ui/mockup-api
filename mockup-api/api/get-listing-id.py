@@ -192,4 +192,4 @@ class handler(BaseHTTPRequestHandler):
         self.send_header("Access-Control-Allow-Headers", "Content-Type")
 
     def log_message(self, format, *args):
-        pass
+        pass 
