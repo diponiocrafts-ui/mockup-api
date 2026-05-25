@@ -116,16 +116,19 @@ class handler(BaseHTTPRequestHandler):
 
             listings = result.get("results", [])
 
-            # Find exact title match
-            matches = [l for l in listings if l.get("title", "").strip() == title]
+            # Find exact title match (case-insensitive)
+            matches = [l for l in listings if l.get("title", "").strip().lower() == title.lower()]
 
             if not matches:
+                # Return the actual titles found to help diagnose mismatches
+                found_titles = [l.get("title", "") for l in listings[:10]]
                 return self._json(200, {
                     "status": "ETSY_DRAFT_NOT_FOUND",
                     "error": "ETSY_DRAFT_NOT_FOUND",
                     "searched_title": title,
                     "total_checked": len(listings),
                     "state_searched": "inactive",
+                    "titles_found": found_titles,
                 })
 
             if len(matches) > 1:
