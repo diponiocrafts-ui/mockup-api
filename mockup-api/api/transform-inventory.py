@@ -203,7 +203,7 @@ class handler(BaseHTTPRequestHandler):
         self.wfile.write(json.dumps({
             "status": "ok",
             "endpoint": "transform-inventory",
-            "version": "top-level-rs-v3",
+            "version": "rs-on-property-v4",
         }).encode())
 
     def do_POST(self):
@@ -239,7 +239,7 @@ class handler(BaseHTTPRequestHandler):
 
             # Build PUT body: pass through all top-level fields from GET except products
             put_body = {"products": products}
-            for key in ["price_on_property", "quantity_on_property", "sku_on_property", "readiness_state"]:
+            for key in ["price_on_property", "quantity_on_property", "sku_on_property", "readiness_state_on_property"]:
                 if key in inventory:
                     put_body[key] = inventory[key]
 
