@@ -6,4 +6,4 @@
     "api/get-listing-id.py": { "maxDuration": 30 },
     "api/debug-shop.py": { "maxDuration": 30 }
   }
-}
+} 
