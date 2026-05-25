@@ -48,7 +48,7 @@ def get_etsy_draft_listings(access_token, shared_secret, limit=100):
         url,
         headers={
             "Authorization": f"Bearer {access_token}",
-            "x-api-key": os.environ.get("ETSY_CLIENT_ID", ""),
+            "x-api-key": os.environ.get("ETSY_CLIENT_ID", "") + ":" + os.environ.get("ETSY_SHARED_SECRET", ""),
         },
     )
     try:
