@@ -92,9 +92,10 @@ def transform_product_for_put(product):
     offerings = []
     for o in product.get("offerings", []):
         offerings.append({
-            "price": money_to_float(o.get("price", 0)),
-            "quantity": o.get("quantity", 999),
-            "is_enabled": o.get("is_enabled", True),
+    "price": money_to_float(o.get("price", 0)),
+    "quantity": o.get("quantity", 999),
+    "is_enabled": o.get("is_enabled", True),
+    "readiness_state": o.get("readiness_state", "ready"),
         })
     property_values = []
     for pv in product.get("property_values", []):
@@ -128,7 +129,7 @@ def build_white_variant(sku, capacity_value, price, color_prop, capacity_prop):
                 "scale_id": capacity_prop.get("scale_id"),
             },
         ],
-        "offerings": [{"price": price, "quantity": 999, "is_enabled": True}],
+        "offerings": [{"price": price, "quantity": 999, "is_enabled": True, "readiness_state": "ready"}],
     }
 
 
