@@ -38,7 +38,7 @@ def get_etsy_access_token(client_id, refresh_token):
         return None, f"[token_refresh] {str(e)}"
 
 
-def get_etsy_draft_listings(access_token, client_id, limit=100):
+def get_etsy_draft_listings(access_token, shared_secret, limit=100):
     url = (
         f"https://openapi.etsy.com/v3/application/shops/{ETSY_SHOP_ID}/listings"
         f"?state=draft&limit={limit}&sort_on=created&sort_order=desc"
@@ -47,7 +47,7 @@ def get_etsy_draft_listings(access_token, client_id, limit=100):
         url,
         headers={
             "Authorization": f"Bearer {access_token}",
-            "x-api-key": client_id,
+            "x-api-key": shared_secret,
         },
     )
     try:
@@ -66,16 +66,84 @@ class handler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_GET(self):
-        self._cors_headers(200)
-        self.send_header("Content-Type", "application/json")
-        self.end_headers()
-        self.wfile.write(json.dumps({
+        # Parse query string
+        parsed = urllib.parse.urlparse(self.path)
+        params = urllib.parse.parse_qs(parsed.query)
+        debug_shops = params.get("debug_shops", ["0"])[0] == "1"
+
+        etsy_client_id = os.environ.get("ETSY_CLIENT_ID", "")
+        etsy_refresh_token = os.environ.get("ETSY_REFRESH_TOKEN", "")
+        etsy_shared_secret = os.environ.get("ETSY_SHARED_SECRET", "")
+
+        base_info = {
             "status": "ok",
             "endpoint": "get-listing-id",
-            "etsy_configured": bool(
-                os.environ.get("ETSY_CLIENT_ID") and os.environ.get("ETSY_REFRESH_TOKEN")
-            ),
-        }).encode())
+            "has_client_id": bool(etsy_client_id),
+            "has_refresh_token": bool(etsy_refresh_token),
+            "has_shared_secret": bool(etsy_shared_secret),
+            "x_api_key_source": "ETSY_SHARED_SECRET",
+        }
+
+        if not debug_shops:
+            return self._json(200, base_info)
+
+        # debug_shops=1 — find the correct shop for this token
+        if not etsy_client_id or not etsy_refresh_token or not etsy_shared_secret:
+            base_info["error"] = "Missing credentials"
+            return self._json(200, base_info)
+
+        access_token, err = get_etsy_access_token(etsy_client_id, etsy_refresh_token)
+        if err:
+            base_info["error"] = err
+            return self._json(200, base_info)
+
+        # Get authenticated user
+        try:
+            req = urllib.request.Request(
+                "https://openapi.etsy.com/v3/application/users/me",
+                headers={
+                    "Authorization": f"Bearer {access_token}",
+                    "x-api-key": etsy_shared_secret,
+                },
+            )
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                me = json.loads(resp.read().decode())
+        except urllib.error.HTTPError as e:
+            base_info["error"] = f"[get_me] {_http_error_detail(e)}"
+            return self._json(200, base_info)
+        except Exception as e:
+            base_info["error"] = f"[get_me] {str(e)}"
+            return self._json(200, base_info)
+
+        user_id = me.get("user_id")
+
+        # Get shops for this user
+        try:
+            req = urllib.request.Request(
+                f"https://openapi.etsy.com/v3/application/users/{user_id}/shops",
+                headers={
+                    "Authorization": f"Bearer {access_token}",
+                    "x-api-key": etsy_shared_secret,
+                },
+            )
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                shops_raw = json.loads(resp.read().decode())
+        except urllib.error.HTTPError as e:
+            base_info["error"] = f"[get_shops] {_http_error_detail(e)}"
+            base_info["authenticated_user_id"] = user_id
+            return self._json(200, base_info)
+        except Exception as e:
+            base_info["error"] = f"[get_shops] {str(e)}"
+            return self._json(200, base_info)
+
+        results = shops_raw.get("results", [shops_raw]) if isinstance(shops_raw, dict) else shops_raw
+        shops = [{"shop_id": s.get("shop_id"), "shop_name": s.get("shop_name"), "user_id": s.get("user_id")} for s in results]
+
+        return self._json(200, {
+            "status": "ok",
+            "authenticated_user_id": user_id,
+            "shops": shops,
+        })
 
     def do_POST(self):
         try:
@@ -88,10 +156,15 @@ class handler(BaseHTTPRequestHandler):
 
             etsy_client_id = os.environ.get("ETSY_CLIENT_ID", "")
             etsy_refresh_token = os.environ.get("ETSY_REFRESH_TOKEN", "")
-            if not etsy_client_id or not etsy_refresh_token:
+            etsy_shared_secret = os.environ.get("ETSY_SHARED_SECRET", "")
+            if not etsy_client_id or not etsy_refresh_token or not etsy_shared_secret:
                 return self._json(200, {
                     "status": "error",
-                    "error": "Etsy credentials not configured (ETSY_CLIENT_ID / ETSY_REFRESH_TOKEN)",
+                    "error": "Etsy credentials not configured",
+                    "has_client_id": bool(etsy_client_id),
+                    "has_refresh_token": bool(etsy_refresh_token),
+                    "has_shared_secret": bool(etsy_shared_secret),
+                    "x_api_key_source": "ETSY_SHARED_SECRET",
                 })
 
             # Get fresh Etsy access token
@@ -99,8 +172,8 @@ class handler(BaseHTTPRequestHandler):
             if err:
                 return self._json(200, {"status": "error", "error": err})
 
-            # Fetch recent draft listings
-            result, err = get_etsy_draft_listings(access_token, etsy_client_id)
+            # Fetch recent draft listings (x-api-key = shared secret)
+            result, err = get_etsy_draft_listings(access_token, etsy_shared_secret)
             if err:
                 return self._json(200, {"status": "error", "error": err})
 
