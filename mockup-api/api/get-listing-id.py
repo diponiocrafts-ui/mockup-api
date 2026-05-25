@@ -38,17 +38,17 @@ def get_etsy_access_token(client_id, refresh_token):
         return None, f"[token_refresh] {str(e)}"
 
 
-def get_etsy_draft_listings(access_token, shared_secret, limit=100):
+def get_etsy_listings(access_token, client_id, shared_secret, state="inactive", limit=100):
     shop_id = os.environ.get("ETSY_SHOP_ID", ETSY_SHOP_ID)
     url = (
         f"https://openapi.etsy.com/v3/application/shops/{shop_id}/listings"
-        f"?state=draft&limit={limit}&sort_on=created&sort_order=desc"
+        f"?state={state}&limit={limit}&sort_on=created&sort_order=desc"
     )
     req = urllib.request.Request(
         url,
         headers={
             "Authorization": f"Bearer {access_token}",
-            "x-api-key": os.environ.get("ETSY_CLIENT_ID", "") + ":" + os.environ.get("ETSY_SHARED_SECRET", ""),
+            "x-api-key": f"{client_id}:{shared_secret}",
         },
     )
     try:
@@ -78,6 +78,8 @@ class handler(BaseHTTPRequestHandler):
             "has_refresh_token": bool(etsy_refresh_token),
             "has_shared_secret": bool(etsy_shared_secret),
             "shop_id": shop_id,
+            "x_api_key_source": "ETSY_CLIENT_ID:ETSY_SHARED_SECRET",
+            "state_filter": "inactive",
         })
 
     def do_POST(self):
@@ -92,6 +94,7 @@ class handler(BaseHTTPRequestHandler):
             etsy_client_id = os.environ.get("ETSY_CLIENT_ID", "")
             etsy_refresh_token = os.environ.get("ETSY_REFRESH_TOKEN", "")
             etsy_shared_secret = os.environ.get("ETSY_SHARED_SECRET", "")
+
             if not etsy_client_id or not etsy_refresh_token or not etsy_shared_secret:
                 return self._json(200, {
                     "status": "error",
@@ -101,15 +104,19 @@ class handler(BaseHTTPRequestHandler):
                     "has_shared_secret": bool(etsy_shared_secret),
                 })
 
+            # Get fresh Etsy access token
             access_token, err = get_etsy_access_token(etsy_client_id, etsy_refresh_token)
             if err:
                 return self._json(200, {"status": "error", "error": err})
 
-            result, err = get_etsy_draft_listings(access_token, etsy_shared_secret)
+            # Search inactive listings (Printify publishes with visible:false = inactive on Etsy)
+            result, err = get_etsy_listings(access_token, etsy_client_id, etsy_shared_secret, state="inactive")
             if err:
-                return self._json(200, {"status": "error", "error": err})
+                return self._json(200, {"status": "error", "error": err, "state_searched": "inactive"})
 
             listings = result.get("results", [])
+
+            # Find exact title match
             matches = [l for l in listings if l.get("title", "").strip() == title]
 
             if not matches:
@@ -117,14 +124,16 @@ class handler(BaseHTTPRequestHandler):
                     "status": "ETSY_DRAFT_NOT_FOUND",
                     "error": "ETSY_DRAFT_NOT_FOUND",
                     "searched_title": title,
-                    "total_drafts_checked": len(listings),
+                    "total_checked": len(listings),
+                    "state_searched": "inactive",
                 })
 
             if len(matches) > 1:
                 return self._json(200, {
-                    "status": "MULTIPLE_DRAFTS_FOUND",
+                    "status": "MULTIPLE_LISTINGS_FOUND",
                     "listing_id": matches[0]["listing_id"],
                     "count": len(matches),
+                    "listing_ids": [l["listing_id"] for l in matches],
                 })
 
             listing = matches[0]
