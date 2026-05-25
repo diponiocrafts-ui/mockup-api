@@ -58,6 +58,28 @@ def get_etsy_inventory(listing_id, access_token, client_id, shared_secret):
         return None, f"[get_inventory] {str(e)}"
 
 
+def put_etsy_inventory(listing_id, products, access_token, client_id, shared_secret):
+    url = f"https://openapi.etsy.com/v3/application/listings/{listing_id}/inventory"
+    body = json.dumps({"products": products}).encode()
+    req = urllib.request.Request(
+        url,
+        data=body,
+        method="PUT",
+        headers={
+            "Authorization": f"Bearer {access_token}",
+            "x-api-key": f"{client_id}:{shared_secret}",
+            "Content-Type": "application/json",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            return json.loads(resp.read().decode()), None
+    except urllib.error.HTTPError as e:
+        return None, f"[put_inventory] {_http_error_detail(e)}"
+    except Exception as e:
+        return None, f"[put_inventory] {str(e)}"
+
+
 def money_to_float(price_obj):
     if isinstance(price_obj, (int, float)):
         return float(price_obj)
@@ -74,7 +96,6 @@ def transform_product_for_put(product):
             "quantity": o.get("quantity", 999),
             "is_enabled": o.get("is_enabled", True),
         })
-
     property_values = []
     for pv in product.get("property_values", []):
         property_values.append({
@@ -83,7 +104,6 @@ def transform_product_for_put(product):
             "values": pv.get("values", []),
             "scale_id": pv.get("scale_id"),
         })
-
     return {
         "sku": product.get("sku", ""),
         "property_values": property_values,
@@ -108,25 +128,17 @@ def build_white_variant(sku, capacity_value, price, color_prop, capacity_prop):
                 "scale_id": capacity_prop.get("scale_id"),
             },
         ],
-        "offerings": [
-            {
-                "price": price,
-                "quantity": 999,
-                "is_enabled": True,
-            }
-        ],
+        "offerings": [{"price": price, "quantity": 999, "is_enabled": True}],
     }
 
 
 def transform_inventory(inventory):
     existing_products = inventory.get("products", [])
-
     if not existing_products:
         keys = list(inventory.keys())
         return None, f"No products in inventory. Keys found: {keys}"
 
     existing_skus = {p.get("sku", "") for p in existing_products}
-
     if WHITE_11OZ_SKU in existing_skus and WHITE_15OZ_SKU in existing_skus:
         return [transform_product_for_put(p) for p in existing_products], None
 
@@ -136,13 +148,13 @@ def transform_inventory(inventory):
     for pv in first.get("property_values", []):
         name = pv.get("property_name", "")
         if name in ("Color", "Mug color"):
-    color_prop = pv
-elif name in ("Capacity", "Size", "Mug sizes"):
-    capacity_prop = pv
+            color_prop = pv
+        elif name in ("Capacity", "Size", "Mug sizes"):
+            capacity_prop = pv
 
     if not color_prop or not capacity_prop:
         found = [pv.get("property_name") for pv in first.get("property_values", [])]
-        return None, f"Expected Color + Capacity properties, found: {found}"
+        return None, f"Expected Color/Mug color + Capacity/Size/Mug sizes, found: {found}"
 
     price_11oz = None
     price_15oz = None
@@ -164,13 +176,9 @@ elif name in ("Capacity", "Size", "Mug sizes"):
 
     updated = [transform_product_for_put(p) for p in existing_products]
     if WHITE_11OZ_SKU not in existing_skus:
-        updated.append(build_white_variant(
-            WHITE_11OZ_SKU, "11 Fluid ounces", price_11oz, color_prop, capacity_prop
-        ))
+        updated.append(build_white_variant(WHITE_11OZ_SKU, "11 Fluid ounces", price_11oz, color_prop, capacity_prop))
     if WHITE_15OZ_SKU not in existing_skus:
-        updated.append(build_white_variant(
-            WHITE_15OZ_SKU, "15 Fluid ounces", price_15oz, color_prop, capacity_prop
-        ))
+        updated.append(build_white_variant(WHITE_15OZ_SKU, "15 Fluid ounces", price_15oz, color_prop, capacity_prop))
 
     return updated, None
 
@@ -188,7 +196,7 @@ class handler(BaseHTTPRequestHandler):
         self.wfile.write(json.dumps({
             "status": "ok",
             "endpoint": "transform-inventory",
-            "mode": "self-fetch (listing_id only required)",
+            "mode": "fetch + transform + PUT (listing_id only required)",
         }).encode())
 
     def do_POST(self):
@@ -219,7 +227,15 @@ class handler(BaseHTTPRequestHandler):
             if err:
                 return self._json({"status": "error", "error": err})
 
-            return self._json({"status": "ok", "products": products})
+            result, err = put_etsy_inventory(listing_id, products, access_token, client_id, shared_secret)
+            if err:
+                return self._json({"status": "error", "error": err, "products_count": len(products)})
+
+            return self._json({
+                "status": "ok",
+                "products_updated": len(products),
+                "listing_id": listing_id,
+            })
 
         except Exception as e:
             return self._json({"status": "error", "error": f"[unhandled] {str(e)}"})
