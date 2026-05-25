@@ -79,7 +79,7 @@ class handler(BaseHTTPRequestHandler):
             "has_shared_secret": bool(etsy_shared_secret),
             "shop_id": shop_id,
             "x_api_key_source": "ETSY_CLIENT_ID:ETSY_SHARED_SECRET",
-            "state_filter": "inactive",
+            "state_filter": "inactive, active, draft (in order)",
         })
 
     def do_POST(self):
@@ -109,26 +109,29 @@ class handler(BaseHTTPRequestHandler):
             if err:
                 return self._json(200, {"status": "error", "error": err})
 
-            # Search inactive listings (Printify publishes with visible:false = inactive on Etsy)
-            result, err = get_etsy_listings(access_token, etsy_client_id, etsy_shared_secret, state="inactive")
-            if err:
-                return self._json(200, {"status": "error", "error": err, "state_searched": "inactive"})
-
-            listings = result.get("results", [])
-
-            # Find exact title match (case-insensitive)
-            matches = [l for l in listings if l.get("title", "").strip().lower() == title.lower()]
+            # Search across multiple states — Printify may publish as inactive, active, or draft
+            matches = []
+            state_searched = None
+            all_titles = []
+            for state in ["inactive", "active", "draft"]:
+                result, err = get_etsy_listings(access_token, etsy_client_id, etsy_shared_secret, state=state)
+                if err:
+                    continue
+                listings = result.get("results", [])
+                all_titles.extend([l.get("title", "") for l in listings])
+                found = [l for l in listings if l.get("title", "").strip().lower() == title.lower()]
+                if found:
+                    matches = found
+                    state_searched = state
+                    break
 
             if not matches:
-                # Return the actual titles found to help diagnose mismatches
-                found_titles = [l.get("title", "") for l in listings[:10]]
                 return self._json(200, {
                     "status": "ETSY_DRAFT_NOT_FOUND",
                     "error": "ETSY_DRAFT_NOT_FOUND",
                     "searched_title": title,
-                    "total_checked": len(listings),
-                    "state_searched": "inactive",
-                    "titles_found": found_titles,
+                    "states_searched": ["inactive", "active", "draft"],
+                    "titles_found": all_titles[:15],
                 })
 
             if len(matches) > 1:
@@ -145,6 +148,7 @@ class handler(BaseHTTPRequestHandler):
                 "listing_id": listing["listing_id"],
                 "title": listing.get("title"),
                 "state": listing.get("state"),
+                "state_found_in": state_searched,
             })
 
         except Exception as e:
