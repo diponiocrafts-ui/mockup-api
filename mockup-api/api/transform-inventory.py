@@ -135,10 +135,10 @@ def transform_inventory(inventory):
     capacity_prop = None
     for pv in first.get("property_values", []):
         name = pv.get("property_name", "")
-        if name == "Color":
-            color_prop = pv
-        elif name in ("Capacity", "Size"):
-            capacity_prop = pv
+        if name in ("Color", "Mug color"):
+    color_prop = pv
+elif name in ("Capacity", "Size", "Mug sizes"):
+    capacity_prop = pv
 
     if not color_prop or not capacity_prop:
         found = [pv.get("property_name") for pv in first.get("property_values", [])]
@@ -148,7 +148,7 @@ def transform_inventory(inventory):
     price_15oz = None
     for product in existing_products:
         for pv in product.get("property_values", []):
-            if pv.get("property_name") in ("Capacity", "Size") and product.get("offerings"):
+            if pv.get("property_name") in ("Capacity", "Size", "Mug sizes") and product.get("offerings"):
                 pval = money_to_float(product["offerings"][0].get("price", 0))
                 vals = pv.get("values", [])
                 if vals and "11" in vals[0]:
