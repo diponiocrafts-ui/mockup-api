@@ -58,9 +58,9 @@ def get_etsy_inventory(listing_id, access_token, client_id, shared_secret):
         return None, f"[get_inventory] {str(e)}"
 
 
-def put_etsy_inventory(listing_id, products, access_token, client_id, shared_secret):
+def put_etsy_inventory(listing_id, body_dict, access_token, client_id, shared_secret):
     url = f"https://openapi.etsy.com/v3/application/listings/{listing_id}/inventory"
-    body = json.dumps({"products": products}).encode()
+    body = json.dumps(body_dict).encode()
     req = urllib.request.Request(
         url,
         data=body,
@@ -95,7 +95,6 @@ def transform_product_for_put(product):
     "price": money_to_float(o.get("price", 0)),
     "quantity": o.get("quantity", 999),
     "is_enabled": o.get("is_enabled", True),
-    "readiness_state": o.get("readiness_state", "ready"),
         })
     property_values = []
     for pv in product.get("property_values", []):
@@ -228,7 +227,13 @@ class handler(BaseHTTPRequestHandler):
             if err:
                 return self._json({"status": "error", "error": err})
 
-            result, err = put_etsy_inventory(listing_id, products, access_token, client_id, shared_secret)
+            # Build PUT body preserving original inventory metadata
+            put_body = {"products": products}
+            for key in ["price_on_property", "quantity_on_property", "sku_on_property", "readiness_state_on_property"]:
+                if key in inventory:
+                    put_body[key] = inventory[key]
+
+            result, err = put_etsy_inventory(listing_id, put_body, access_token, client_id, shared_secret)
             if err:
                 return self._json({"status": "error", "error": err, "products_count": len(products)})
 
