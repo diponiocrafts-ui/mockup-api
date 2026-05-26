@@ -89,12 +89,11 @@ def money_to_float(price_obj):
 
 
 def transform_offering(o):
-    """Convert GET offering to PUT format."""
+    """Convert GET offering to PUT format. No readiness_state — handled at top level."""
     return {
         "price": money_to_float(o.get("price", 0)),
         "quantity": o.get("quantity", 999),
         "is_enabled": o.get("is_enabled", True),
-        "readiness_state": 2,
     }
 
 
@@ -132,7 +131,7 @@ def build_white_variant(sku, capacity_value, price, color_prop, capacity_prop):
                 "scale_id": capacity_prop.get("scale_id"),
             },
         ],
-        "offerings": [{"price": price, "quantity": 999, "is_enabled": True, "readiness_state": 2}],
+        "offerings": [{"price": price, "quantity": 999, "is_enabled": True}],
     }
 
 
@@ -204,7 +203,7 @@ class handler(BaseHTTPRequestHandler):
         self.wfile.write(json.dumps({
             "status": "ok",
             "endpoint": "transform-inventory",
-            "version": "both-rs-v5",
+            "version": "empty-rs-prop-v6",
         }).encode())
 
     def do_POST(self):
@@ -238,11 +237,13 @@ class handler(BaseHTTPRequestHandler):
             if err:
                 return self._json({"status": "error", "error": err})
 
-            # Build PUT body: pass through all top-level fields from GET except products
+            # Build PUT body: pass through top-level fields from GET except products
+            # Force readiness_state_on_property=[] to disable per-offering readiness_state requirement
             put_body = {"products": products}
-            for key in ["price_on_property", "quantity_on_property", "sku_on_property", "readiness_state_on_property"]:
+            for key in ["price_on_property", "quantity_on_property", "sku_on_property"]:
                 if key in inventory:
                     put_body[key] = inventory[key]
+            put_body["readiness_state_on_property"] = []
 
             result, err = put_etsy_inventory(listing_id, put_body, access_token, client_id, shared_secret)
             if err:
