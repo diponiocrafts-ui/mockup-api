@@ -204,7 +204,7 @@ class handler(BaseHTTPRequestHandler):
                     "message": "Etsy credentials not yet configured (ETSY_CLIENT_ID / ETSY_REFRESH_TOKEN). Add them to Vercel env vars to enable White variant automation.",
                 })
 
-            # -- 1. Get Etsy listing ID from Printify product --
+            # ── 1. Get Etsy listing ID from Printify product ──────────────────
             printify_product, err = get_printify_product(printify_token, product_id)
             if err:
                 return self._json(200, {"status": "error", "error": err})
@@ -217,19 +217,19 @@ class handler(BaseHTTPRequestHandler):
                     "error": f"No Etsy listing ID on Printify product {product_id}. external field: {json.dumps(external)}",
                 })
 
-            # -- 2. Fresh Etsy access token --
+            # ── 2. Fresh Etsy access token ────────────────────────────────────
             etsy_token, err = get_etsy_access_token(etsy_client_id, etsy_refresh_token)
             if err:
                 return self._json(200, {"status": "error", "error": err})
 
-            # -- 3. GET current inventory --
+            # ── 3. GET current inventory ──────────────────────────────────────
             inventory, err = get_etsy_inventory(listing_id, etsy_token, etsy_client_id)
             if err:
                 return self._json(200, {"status": "error", "error": err})
 
             existing_products = inventory.get("products", [])
 
-            # -- 4. Idempotency: skip if White already there --
+            # ── 4. Idempotency: skip if White already there ───────────────────
             existing_skus = {p.get("sku", "") for p in existing_products}
             if WHITE_11OZ_SKU in existing_skus and WHITE_15OZ_SKU in existing_skus:
                 return self._json(200, {
@@ -244,7 +244,7 @@ class handler(BaseHTTPRequestHandler):
                     "error": f"Etsy inventory has no products for listing {listing_id}. Raw inventory keys: {list(inventory.keys())}",
                 })
 
-            # -- 5. Extract Color + Capacity property structure --
+            # ── 5. Extract Color + Capacity property structure ────────────────
             first = existing_products[0]
             color_prop = None
             capacity_prop = None
@@ -259,7 +259,7 @@ class handler(BaseHTTPRequestHandler):
                 found = [pv.get("property_name") for pv in first.get("property_values", [])]
                 return self._json(200, {"status": "error", "error": f"Expected Color + Capacity properties, found: {found}"})
 
-            # -- 6. Find per-size prices from existing variants --
+            # ── 6. Find per-size prices from existing variants ────────────────
             price_11oz = None
             price_15oz = None
             for product in existing_products:
@@ -279,7 +279,7 @@ class handler(BaseHTTPRequestHandler):
             price_11oz = price_11oz or fallback
             price_15oz = price_15oz or fallback
 
-            # -- 7. Build updated products array --
+            # ── 7. Build updated products array ───────────────────────────────
             updated = [transform_for_put(p) for p in existing_products]
             if WHITE_11OZ_SKU not in existing_skus:
                 updated.append(build_white_variant(
@@ -290,7 +290,7 @@ class handler(BaseHTTPRequestHandler):
                     WHITE_15OZ_SKU, "15 Fluid ounces", price_15oz, color_prop, capacity_prop
                 ))
 
-            # -- 8. PUT updated inventory --
+            # ── 8. PUT updated inventory ──────────────────────────────────────
             result, err = put_etsy_inventory(listing_id, etsy_token, etsy_client_id, updated)
             if err:
                 return self._json(200, {"status": "error", "error": err})
