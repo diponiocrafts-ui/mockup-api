@@ -174,11 +174,22 @@ class handler(BaseHTTPRequestHandler):
                     "product_id": product_id,
                 })
 
-            # 5. Update product
+            # 5. Update print_areas to include new White variant IDs
+            new_ids = [v["id"] for v in added]
+            print_areas = product.get("print_areas", [])
+            for pa in print_areas:
+                pa["variant_ids"] = pa.get("variant_ids", []) + new_ids
+
+            # 6. Update product — send both variants and print_areas
+            put_body = {"variants": updated_variants}
+            if print_areas:
+                put_body["print_areas"] = print_areas
+
             result, err = printify_put(
                 f"/v1/shops/{shop_id}/products/{product_id}.json",
-                {"variants": updated_variants},
+                put_body,
                 token
+            )
             )
             if err:
                 return self._json({"status": "error", "error": err})
