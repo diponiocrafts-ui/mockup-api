@@ -2,18 +2,13 @@ from http.server import BaseHTTPRequestHandler
 import json
 import os
 import urllib.request
-import urllib.parse
 import urllib.error
 
-PRINTIFY_SHOP_ID = "12909290"
-
-# Fixed SKUs for the pre-created Printify White mug product (blueprint 478, ID: 6a0bf3405254961412080457)
-WHITE_11OZ_SKU = "24873414371188792626"
-WHITE_15OZ_SKU = "80484685462245870793"
+PRINTIFY_SHOP_ID = os.environ.get("PRINTIFY_SHOP_ID", "12909290")
+BLUEPRINT_ID = "635"
 
 
 def _http_error_detail(e):
-    """Extract status code and body from an HTTPError."""
     try:
         body = e.read().decode("utf-8", errors="replace")
     except Exception:
@@ -21,145 +16,67 @@ def _http_error_detail(e):
     return f"HTTP {e.code}: {body}"
 
 
-def get_etsy_access_token(client_id, refresh_token):
-    """Get a fresh Etsy access token using the stored refresh token."""
-    data = urllib.parse.urlencode({
-        "grant_type": "refresh_token",
-        "client_id": client_id,
-        "refresh_token": refresh_token,
-    }).encode()
+def printify_get(path, token):
     req = urllib.request.Request(
-        "https://api.etsy.com/v3/public/oauth/token",
-        data=data,
-        method="POST",
-        headers={"Content-Type": "application/x-www-form-urlencoded"},
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            result = json.loads(resp.read().decode())
-            return result["access_token"], None
-    except urllib.error.HTTPError as e:
-        return None, f"[token_refresh] {_http_error_detail(e)}"
-    except Exception as e:
-        return None, f"[token_refresh] {str(e)}"
-
-
-def get_printify_product(printify_token, product_id):
-    """Get Printify product — we need external.id (Etsy listing ID)."""
-    req = urllib.request.Request(
-        f"https://api.printify.com/v1/shops/{PRINTIFY_SHOP_ID}/products/{product_id}.json",
-        headers={"Authorization": f"Bearer {printify_token}"},
+        f"https://api.printify.com{path}",
+        headers={"Authorization": f"Bearer {token}", "User-Agent": "Mozilla/5.0"},
     )
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
             return json.loads(resp.read().decode()), None
     except urllib.error.HTTPError as e:
-        return None, f"[printify_get] {_http_error_detail(e)}"
+        return None, f"[GET {path}] {_http_error_detail(e)}"
     except Exception as e:
-        return None, f"[printify_get] {str(e)}"
+        return None, f"[GET {path}] {str(e)}"
 
 
-def get_etsy_inventory(listing_id, access_token, client_id):
-    """GET current Etsy listing inventory."""
+def printify_put(path, body_dict, token):
+    body = json.dumps(body_dict).encode()
     req = urllib.request.Request(
-        f"https://openapi.etsy.com/v3/application/listings/{listing_id}/inventory",
-        headers={
-            "Authorization": f"Bearer {access_token}",
-            "x-api-key": client_id,
-        },
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            return json.loads(resp.read().decode()), None
-    except urllib.error.HTTPError as e:
-        return None, f"[inventory_get] {_http_error_detail(e)}"
-    except Exception as e:
-        return None, f"[inventory_get] {str(e)}"
-
-
-def put_etsy_inventory(listing_id, access_token, client_id, products):
-    """PUT updated inventory back to Etsy (replaces all variants)."""
-    data = json.dumps({"products": products}).encode()
-    req = urllib.request.Request(
-        f"https://openapi.etsy.com/v3/application/listings/{listing_id}/inventory",
-        data=data,
+        f"https://api.printify.com{path}",
+        data=body,
         method="PUT",
         headers={
-            "Authorization": f"Bearer {access_token}",
-            "x-api-key": client_id,
+            "Authorization": f"Bearer {token}",
             "Content-Type": "application/json",
+            "User-Agent": "Mozilla/5.0",
         },
     )
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
             return json.loads(resp.read().decode()), None
     except urllib.error.HTTPError as e:
-        return None, f"[inventory_put] {_http_error_detail(e)}"
+        return None, f"[PUT {path}] {_http_error_detail(e)}"
     except Exception as e:
-        return None, f"[inventory_put] {str(e)}"
+        return None, f"[PUT {path}] {str(e)}"
 
 
-def money_to_float(price_obj):
-    """Convert Etsy Money response object { amount, divisor } to a plain float for PUT."""
-    if isinstance(price_obj, (int, float)):
-        return float(price_obj)
-    amount = price_obj.get("amount", 0)
-    divisor = price_obj.get("divisor", 100)
-    return round(float(amount) / float(divisor), 2)
+def find_white_variant_ids(all_variants):
+    white_11oz_id = None
+    white_15oz_id = None
+    for v in all_variants:
+        title = v.get("title", "").lower()
+        is_white = "white" in title
+        is_11oz = "11" in title
+        is_15oz = "15" in title
+        if is_white and is_11oz:
+            white_11oz_id = v.get("id")
+        elif is_white and is_15oz:
+            white_15oz_id = v.get("id")
+        if white_11oz_id and white_15oz_id:
+            break
+    return white_11oz_id, white_15oz_id
 
 
-def transform_for_put(product):
-    """Convert a GET-format product object into the shape Etsy's PUT expects."""
-    offerings = []
-    for o in product.get("offerings", []):
-        offerings.append({
-            "price": money_to_float(o.get("price", 0)),
-            "quantity": o.get("quantity", 999),
-            "is_enabled": o.get("is_enabled", True),
-        })
-
-    property_values = []
-    for pv in product.get("property_values", []):
-        property_values.append({
-            "property_id": pv["property_id"],
-            "property_name": pv.get("property_name", ""),
-            "values": pv.get("values", []),
-            "scale_id": pv.get("scale_id"),
-        })
-
-    return {
-        "sku": product.get("sku", ""),
-        "property_values": property_values,
-        "offerings": offerings,
-    }
-
-
-def build_white_variant(sku, capacity_value, price, color_prop, capacity_prop):
-    """Build a White variant object in PUT format."""
-    return {
-        "sku": sku,
-        "property_values": [
-            {
-                "property_id": color_prop["property_id"],
-                "property_name": color_prop.get("property_name", "Color"),
-                "values": ["White"],
-                "scale_id": color_prop.get("scale_id"),
-            },
-            {
-                "property_id": capacity_prop["property_id"],
-                "property_name": capacity_prop.get("property_name", "Capacity"),
-                "values": [capacity_value],
-                "scale_id": capacity_prop.get("scale_id"),
-            },
-        ],
-        "offerings": [
-            {
-                "price": price,
-                "quantity": 999,
-                "is_enabled": True,
-            }
-        ],
-    }
+def price_for_size(product_variants, oz):
+    for v in product_variants:
+        title = v.get("title", "").lower()
+        if str(oz) in title and v.get("is_enabled", True):
+            return v.get("price", 1874)
+    for v in product_variants:
+        if v.get("is_enabled", True):
+            return v.get("price", 1874)
+    return 1874
 
 
 class handler(BaseHTTPRequestHandler):
@@ -169,144 +86,96 @@ class handler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_GET(self):
-        """Health check."""
         self._cors_headers(200)
         self.send_header("Content-Type", "application/json")
         self.end_headers()
         self.wfile.write(json.dumps({
             "status": "ok",
             "endpoint": "add-white-variants",
-            "etsy_configured": bool(
-                os.environ.get("ETSY_CLIENT_ID") and os.environ.get("ETSY_REFRESH_TOKEN")
-            ),
+            "version": "v3",
         }).encode())
 
     def do_POST(self):
-        # Always return HTTP 200 — errors are reported in the JSON body.
-        # This ensures the Make.com pipeline never stops due to this step.
         try:
             length = int(self.headers.get("Content-Length", 0))
             body = json.loads(self.rfile.read(length))
 
-            product_id = body.get("product_id", "").strip()
-            printify_token = body.get("printify_token", "").strip()
-
+            product_id = str(body.get("product_id", "")).strip()
             if not product_id:
-                return self._json(200, {"status": "error", "error": "Missing product_id"})
-            if not printify_token:
-                return self._json(200, {"status": "error", "error": "Missing printify_token"})
+                return self._json({"status": "error", "error": "Missing product_id"})
 
-            etsy_client_id = os.environ.get("ETSY_CLIENT_ID", "")
-            etsy_refresh_token = os.environ.get("ETSY_REFRESH_TOKEN", "")
-            if not etsy_client_id or not etsy_refresh_token:
-                return self._json(200, {
-                    "status": "skipped",
-                    "message": "Etsy credentials not yet configured (ETSY_CLIENT_ID / ETSY_REFRESH_TOKEN). Add them to Vercel env vars to enable White variant automation.",
-                })
+            token = body.get("printify_token") or os.environ.get("PRINTIFY_API_TOKEN", "")
+            if not token:
+                return self._json({"status": "error", "error": "No Printify token"})
 
-            # ── 1. Get Etsy listing ID from Printify product ──────────────────
-            printify_product, err = get_printify_product(printify_token, product_id)
+            shop_id = PRINTIFY_SHOP_ID
+
+            product, err = printify_get(f"/v1/shops/{shop_id}/products/{product_id}.json", token)
             if err:
-                return self._json(200, {"status": "error", "error": err})
+                return self._json({"status": "error", "error": err})
 
-            external = printify_product.get("external", {})
-            listing_id = str(external.get("id", "")).strip()
-            if not listing_id:
-                return self._json(200, {
+            print_provider_id = product.get("print_provider_id")
+            if not print_provider_id:
+                return self._json({"status": "error", "error": "No print_provider_id in product"})
+
+            existing_variants = product.get("variants", [])
+            existing_ids = {v["id"] for v in existing_variants}
+
+            catalog, err = printify_get(
+                f"/v1/catalog/blueprints/{BLUEPRINT_ID}/print_providers/{print_provider_id}/variants.json",
+                token
+            )
+            if err:
+                return self._json({"status": "error", "error": err})
+
+            all_variants = catalog.get("variants", [])
+            if not all_variants:
+                return self._json({"status": "error", "error": "No variants in catalog"})
+
+            white_11oz_id, white_15oz_id = find_white_variant_ids(all_variants)
+
+            if not white_11oz_id or not white_15oz_id:
+                sample = [v.get("title") for v in all_variants[:20]]
+                return self._json({
                     "status": "error",
-                    "error": f"No Etsy listing ID on Printify product {product_id}. external field: {json.dumps(external)}",
+                    "error": "Could not find White 11oz and/or 15oz variants",
+                    "sample_titles": sample,
                 })
 
-            # ── 2. Fresh Etsy access token ────────────────────────────────────
-            etsy_token, err = get_etsy_access_token(etsy_client_id, etsy_refresh_token)
+            added = []
+            updated_variants = list(existing_variants)
+
+            if white_11oz_id not in existing_ids:
+                updated_variants.append({"id": white_11oz_id, "price": price_for_size(existing_variants, 11), "is_enabled": True})
+                added.append({"id": white_11oz_id, "size": "11oz"})
+
+            if white_15oz_id not in existing_ids:
+                updated_variants.append({"id": white_15oz_id, "price": price_for_size(existing_variants, 15), "is_enabled": True})
+                added.append({"id": white_15oz_id, "size": "15oz"})
+
+            if not added:
+                return self._json({"status": "ok", "message": "White variants already present", "product_id": product_id})
+
+            new_ids = [v["id"] for v in added]
+            print_areas = product.get("print_areas", [])
+            for pa in print_areas:
+                pa["variant_ids"] = pa.get("variant_ids", []) + new_ids
+
+            put_body = {"variants": updated_variants}
+            if print_areas:
+                put_body["print_areas"] = print_areas
+
+            result, err = printify_put(f"/v1/shops/{shop_id}/products/{product_id}.json", put_body, token)
             if err:
-                return self._json(200, {"status": "error", "error": err})
+                return self._json({"status": "error", "error": err})
 
-            # ── 3. GET current inventory ──────────────────────────────────────
-            inventory, err = get_etsy_inventory(listing_id, etsy_token, etsy_client_id)
-            if err:
-                return self._json(200, {"status": "error", "error": err})
-
-            existing_products = inventory.get("products", [])
-
-            # ── 4. Idempotency: skip if White already there ───────────────────
-            existing_skus = {p.get("sku", "") for p in existing_products}
-            if WHITE_11OZ_SKU in existing_skus and WHITE_15OZ_SKU in existing_skus:
-                return self._json(200, {
-                    "status": "already_exists",
-                    "message": "White variants already present — nothing to do.",
-                    "listing_id": listing_id,
-                })
-
-            if not existing_products:
-                return self._json(200, {
-                    "status": "error",
-                    "error": f"Etsy inventory has no products for listing {listing_id}. Raw inventory keys: {list(inventory.keys())}",
-                })
-
-            # ── 5. Extract Color + Capacity property structure ────────────────
-            first = existing_products[0]
-            color_prop = None
-            capacity_prop = None
-            for pv in first.get("property_values", []):
-                name = pv.get("property_name", "")
-                if name == "Color":
-                    color_prop = pv
-                elif name in ("Capacity", "Size"):
-                    capacity_prop = pv
-
-            if not color_prop or not capacity_prop:
-                found = [pv.get("property_name") for pv in first.get("property_values", [])]
-                return self._json(200, {"status": "error", "error": f"Expected Color + Capacity properties, found: {found}"})
-
-            # ── 6. Find per-size prices from existing variants ────────────────
-            price_11oz = None
-            price_15oz = None
-            for product in existing_products:
-                for pv in product.get("property_values", []):
-                    if pv.get("property_name") in ("Capacity", "Size") and product.get("offerings"):
-                        pval = money_to_float(product["offerings"][0].get("price", 0))
-                        vals = pv.get("values", [])
-                        if vals and "11" in vals[0]:
-                            price_11oz = pval
-                        elif vals and "15" in vals[0]:
-                            price_15oz = pval
-                if price_11oz and price_15oz:
-                    break
-
-            # Fallback to first offering price if size lookup failed
-            fallback = money_to_float(first.get("offerings", [{}])[0].get("price", 0))
-            price_11oz = price_11oz or fallback
-            price_15oz = price_15oz or fallback
-
-            # ── 7. Build updated products array ───────────────────────────────
-            updated = [transform_for_put(p) for p in existing_products]
-            if WHITE_11OZ_SKU not in existing_skus:
-                updated.append(build_white_variant(
-                    WHITE_11OZ_SKU, "11 Fluid ounces", price_11oz, color_prop, capacity_prop
-                ))
-            if WHITE_15OZ_SKU not in existing_skus:
-                updated.append(build_white_variant(
-                    WHITE_15OZ_SKU, "15 Fluid ounces", price_15oz, color_prop, capacity_prop
-                ))
-
-            # ── 8. PUT updated inventory ──────────────────────────────────────
-            result, err = put_etsy_inventory(listing_id, etsy_token, etsy_client_id, updated)
-            if err:
-                return self._json(200, {"status": "error", "error": err})
-
-            return self._json(200, {
-                "status": "success",
-                "listing_id": listing_id,
-                "variants_added": len(updated) - len(existing_products),
-                "total_variants": len(updated),
-            })
+            return self._json({"status": "ok", "product_id": product_id, "variants_added": added, "total_variants": len(updated_variants)})
 
         except Exception as e:
-            self._json(200, {"status": "error", "error": f"[unhandled] {str(e)}"})
+            return self._json({"status": "error", "error": f"[unhandled] {str(e)}"})
 
-    def _json(self, code, payload):
-        self._cors_headers(code)
+    def _json(self, payload):
+        self._cors_headers(200)
         self.send_header("Content-Type", "application/json")
         self.end_headers()
         self.wfile.write(json.dumps(payload).encode())
@@ -317,11 +186,5 @@ class handler(BaseHTTPRequestHandler):
         self.send_header("Access-Control-Allow-Methods", "POST, GET, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Content-Type")
 
-    def _error(self, code, message):
-        self._cors_headers(code)
-        self.send_header("Content-Type", "application/json")
-        self.end_headers()
-        self.wfile.write(json.dumps({"error": message}).encode())
-
     def log_message(self, format, *args):
-        pass  # suppress default logging
+        pass
